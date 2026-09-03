@@ -27,23 +27,15 @@ const otherAccountClientKey = crypto.createHash('sha256').update(otherAccountHea
 const testDescription = '接口级本地提交测试';
 
 const indexHtml = await fetch('http://127.0.0.1:8123/index.html').then((response) => response.text());
-const entryScriptSrc = [...indexHtml.matchAll(/<script\b[^>]*type=["']module["'][^>]*src=["']([^"']*index-ebfab978\.js[^"']*)["']/gi)][0]?.[1];
-assert.ok(entryScriptSrc, 'Expected live index.html to include the original Vue entry script');
-assert.ok(!/\.js\.[^/"']+$/u.test(entryScriptSrc), `Entry script URL must be normalized to one module identity: ${entryScriptSrc}`);
-const entryScriptResponse = await fetch(new URL(entryScriptSrc, 'http://127.0.0.1:8123/index.html'));
-assert.equal(entryScriptResponse.status, 200);
-const entryScriptText = await entryScriptResponse.text();
-assert.match(entryScriptText, /window\.__uniRoutes/);
-assert.match(
-  entryScriptText,
-  /pages-tool-approvalDetailPage-approvalDetailPage\.d46ed04c\.js\?local-detail-v=/u,
-);
-const legacyEntryScriptResponse = await fetch(
-  new URL(entryScriptSrc.replace(/\.js$/u, '.js.下载'), 'http://127.0.0.1:8123/index.html'),
-  { redirect: 'manual' },
-);
-assert.equal(legacyEntryScriptResponse.status, 302);
-assert.match(legacyEntryScriptResponse.headers.get('location') || '', /index-ebfab978\.js$/u);
+assert.match(indexHtml, /static-app\.js\?v=/u);
+assert.match(indexHtml, /copy-navigation\.js\?v=/u);
+assert.match(indexHtml, /application\/x-copy-disabled/u);
+
+for (const helper of ['static-app.js', 'copy-navigation.js']) {
+  const helperResponse = await fetch(`http://127.0.0.1:8123/${helper}`);
+  assert.equal(helperResponse.status, 200);
+  assert.match(await helperResponse.text(), /\(\(\) => \{/u);
+}
 
 function loadStoredApplications() {
   if (!fs.existsSync(applicationsPath)) {
