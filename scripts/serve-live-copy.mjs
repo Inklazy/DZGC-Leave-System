@@ -274,35 +274,6 @@ function allUserContexts() {
   return loadJsonObject(userContextsPath);
 }
 
-function accountFromRequest(req) {
-  return String(headerValue(req.headers, 'x-leave-account') || '').trim();
-}
-
-function storedContextForAccount(account) {
-  if (!account) {
-    return {};
-  }
-
-  return Object.values(allUserContexts()).find((context = {}) => {
-    return [context.studentNo, context.userNo, context.userKey].map(String).includes(account);
-  }) || {};
-}
-
-function requestUserContext(req) {
-  const account = accountFromRequest(req);
-  if (!account) {
-    return {};
-  }
-
-  const stored = storedContextForAccount(account);
-  return mergeUserContexts(stored, {
-    studentNo: account,
-    userNo: account,
-    userKey: account,
-    clientKey: `account-${account}`,
-  });
-}
-
 function saveContextForClient(clientKey, context) {
   const cleaned = cleanContext(context);
   if (!Object.keys(cleaned).length) {
@@ -343,9 +314,8 @@ async function ensureUserContext(req) {
 }
 
 function localApplicationsForClient(req, userContext = {}) {
-  const requestContext = requestUserContext(req);
-  const clientKey = requestContext.clientKey || clientKeyFromRequest(req);
-  const context = mergeUserContexts(userContext, requestContext, contextForClient(clientKey));
+  const clientKey = clientKeyFromRequest(req);
+  const context = mergeUserContexts(userContext, contextForClient(clientKey));
   return selectApplicationsForUser(loadApplications(applicationsPath), {
     ...context,
     clientKey,
@@ -353,15 +323,12 @@ function localApplicationsForClient(req, userContext = {}) {
 }
 
 function currentLocalRecords(req, userContext = {}) {
-  const context = mergeUserContexts(userContext, requestUserContext(req));
+  const context = mergeUserContexts(userContext, contextForClient(clientKeyFromRequest(req)));
   return recordsFromApplications(localApplicationsForClient(req), context);
 }
 
 async function findLocalApplicationWithContext(req, localId) {
-  const requestContext = requestUserContext(req);
-  const context = Object.keys(requestContext).length
-    ? requestContext
-    : await ensureUserContext(req);
+  const context = await ensureUserContext(req);
   const scopedEntry = findApplicationByLocalId(localApplicationsForClient(req), localId, context);
   if (scopedEntry) {
     return scopedEntry;
@@ -701,10 +668,8 @@ async function handleLocalApi(req, res, reqUrl) {
   if (reqUrl.pathname === '/api/applications' && req.method === 'POST') {
     const body = await readRequestBody(req);
     const payload = parseJsonBody(body);
-    const requestContext = requestUserContext(req);
-    const clientKey = requestContext.clientKey || clientKeyFromRequest(req);
+    const clientKey = clientKeyFromRequest(req);
     const entry = saveApplication(applicationsPath, payload, {
-      ...requestContext,
       ...contextForClient(clientKey),
       clientKey,
     });

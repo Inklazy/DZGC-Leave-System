@@ -117,34 +117,14 @@ if (exists(liveDir)) {
     if (!html.includes('./live-guard.js')) {
       fail(`Live guard not injected in alias page: ${alias}`);
     }
-    if (!html.includes('./copy-navigation.js')) {
-      fail(`Static navigation helper missing in live page: ${alias}`);
+    if (html.includes('copy-navigation.js')) {
+      fail(`Static navigation helper leaked into live page: ${alias}`);
     }
-    if (!html.includes('./static-app.js')) {
-      fail(`Static application helper missing in live page: ${alias}`);
+    if (html.includes('application/x-copy-disabled')) {
+      fail(`Original runtime is disabled in live page: ${alias}`);
     }
-    if (!html.includes('application/x-copy-disabled')) {
-      fail(`Unavailable original runtime is not disabled in live page: ${alias}`);
-    }
-
-    for (const tag of activeScripts(html)) {
-      const match = tag.match(/\ssrc=(["'])(.+?)\1/i);
-      if (!match || !match[2].startsWith('./')) continue;
-      const relativePath = match[2].slice(2).split(/[?#]/u)[0];
-      const assetPath = path.join(liveDir, ...relativePath.split('/'));
-      if (!exists(assetPath)) {
-        fail(`Missing local script referenced by ${alias}: ${match[2]}`);
-      }
-    }
-
-    for (const match of html.matchAll(/<link\b[^>]*rel=(["'])stylesheet\1[^>]*>/gi)) {
-      const href = match[0].match(/\shref=(["'])(.+?)\1/i)?.[2];
-      if (!href || !href.startsWith('./')) continue;
-      const relativePath = href.slice(2).split(/[?#]/u)[0];
-      const assetPath = path.join(liveDir, ...relativePath.split('/'));
-      if (!exists(assetPath)) {
-        fail(`Missing local stylesheet referenced by ${alias}: ${href}`);
-      }
+    if (!activeScripts(html).some((tag) => /index-ebfab978\.js/i.test(tag))) {
+      fail(`Original Vue runtime entry script missing in live page: ${alias}`);
     }
   }
 
@@ -154,10 +134,9 @@ if (exists(liveDir)) {
     }
   }
 
-  for (const helper of ['copy-navigation.js', 'static-app.js']) {
-    if (!exists(path.join(liveDir, helper))) {
-      fail(`Missing static helper: ${helper}`);
-    }
+  const files = walk(liveDir).map((file) => path.relative(liveDir, file).replaceAll(path.sep, '/'));
+  if (!files.some((file) => file.endsWith('index-ebfab978.js.下载'))) {
+    fail('Live copy missing saved original runtime bundle');
   }
 }
 
@@ -173,7 +152,6 @@ if (exists(serverPath)) {
     '/api-general/approvalCenter/getMyApply',
     'local-json-active',
     'applications.json',
-    'requestUserContext',
   ]) {
     if (!server.includes(expected)) {
       fail(`Live server missing expected behavior marker: ${expected}`);

@@ -96,8 +96,6 @@ docker compose logs -f leave-system
 
 容器删除、升级或重建不会删除这两个文件。迁移 VPS 时必须备份整个 `/opt/leave-system-data` 目录。
 
-部署后访问 `http://<VPS-IP>/index.html`。登录页只需输入学号并点击“立即登录”；密码和验证码保留原站外观，但不做原站校验，也不会保存。
-
 ## 四、Caddy 配置
 
 Compose 只发布 `127.0.0.1:8123`，端口不会暴露到公网。保留以下 Caddy 配置即可：

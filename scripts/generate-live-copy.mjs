@@ -109,37 +109,8 @@ function injectLiveGuard(html) {
   return `${html}\n${script}\n`;
 }
 
-function disableOriginalRuntime(html) {
-  return html
-    .replace(/<script\b/gi, '<script type="application/x-copy-disabled"')
-    .replace(/<script type="application\/x-copy-disabled"[^>]*>/gi, (tag) => tag.replace(/\ssrc=/i, ' data-copy-src='))
-    .replace(/\srel=(["'])modulepreload\1/gi, ' data-copy-rel-disabled="modulepreload"')
-    .replace(/\shref=(["'])http:\/\/esp\.qmxy\.com\/assets\/[^"']+\1/gi, ' data-copy-remote-href=""')
-    .replace(/\.\/chii\/target\.js/g, './copy-disabled/target.js');
-}
-
-function injectStaticApp(html) {
-  const scripts = [
-    '<script src="./static-app.js?v=20260903-13"></script>',
-    '<script src="./copy-navigation.js?v=20260903-13"></script>',
-  ].join('\n');
-
-  if (html.includes(scripts)) {
-    return html;
-  }
-
-  if (html.includes('</body>')) {
-    return html.replace('</body>', `${scripts}\n</body>`);
-  }
-
-  return `${html}\n${scripts}\n`;
-}
-
 function normalizeLiveHtml(html, page) {
-  const normalized = disableOriginalRuntime(
-    localizeRemoteAssetRefs(sanitizeExtensionArtifacts(removeSavedFromComment(html)), page),
-  );
-  return injectStaticApp(injectLiveGuard(normalized));
+  return injectLiveGuard(localizeRemoteAssetRefs(sanitizeExtensionArtifacts(removeSavedFromComment(html)), page));
 }
 
 function createAliasPages(pageHtmlByName) {
@@ -188,11 +159,6 @@ function createLiveGuard() {
   fs.writeFileSync(path.join(liveDir, 'live-guard.js'), guard, 'utf8');
 }
 
-function copyStaticHelpers() {
-  fs.copyFileSync(path.join(root, 'scripts', 'static-navigation.js'), path.join(liveDir, 'copy-navigation.js'));
-  fs.copyFileSync(path.join(root, 'scripts', 'static-app.js'), path.join(liveDir, 'static-app.js'));
-}
-
 copyFresh();
 copySharedResourceAssets();
 writeExternalFallbackAssets();
@@ -209,6 +175,5 @@ for (const page of pages) {
 localizeStylesheets();
 createAliasPages(pageHtmlByName);
 createLiveGuard();
-copyStaticHelpers();
 
 console.log(`Generated live proxy copy at ${liveDir}`);
