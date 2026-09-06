@@ -351,6 +351,21 @@ function createdDate(entry = {}) {
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }
 
+/**
+ * Gives each local application a stable, realistic-looking approval delay.
+ * It is derived from the local ID so revisiting a record never changes it.
+ */
+export function approvalDelaySeconds(entry = {}) {
+  const key = entry.id || entry.createdAt || entry.updatedAt || 'local-application';
+  const hashPrefix = hashId([key, 'approval-delay']).slice(0, 8);
+  return 10 + (Number.parseInt(hashPrefix, 16) % 21);
+}
+
+export function localApprovalTime(entry = {}) {
+  const approvedAt = new Date(createdDate(entry).getTime() + approvalDelaySeconds(entry) * 1000);
+  return formatDateTime(approvedAt);
+}
+
 function timeValue(record) {
   const raw = record.title1 || record.submitTime || record.submit_time || record.createdAt || record.createTime || '';
   if (typeof raw === 'number') return raw;
@@ -612,7 +627,7 @@ export function deriveWorkflowTemplateFromOriginFlow(originResponse = {}) {
   return actList.length ? { actList } : null;
 }
 
-function localActListFromWorkflowTemplate(workflowTemplate, id, createdAt) {
+function localActListFromWorkflowTemplate(workflowTemplate, id, createdAt, approvedAt) {
   const template = deriveWorkflowTemplateFromOriginFlow(workflowTemplate);
   if (!template) {
     return [];
@@ -624,7 +639,11 @@ function localActListFromWorkflowTemplate(workflowTemplate, id, createdAt) {
     taskList: (act.taskList || []).map((task, taskIndex) => ({
       ...task,
       taskId: `${id}-origin-act-${actIndex + 1}-task-${taskIndex + 1}`,
-      handleTime: task.handleTime || (Number(task.handleType) > 0 ? createdAt : ''),
+      // Keep the original workflow people and outcome, but make a local
+      // approval happen shortly after this local application was submitted.
+      handleTime: Number(task.handleType) === 1
+        ? approvedAt
+        : task.handleTime || (Number(task.handleType) > 0 ? createdAt : ''),
     })),
   }));
 }
@@ -632,8 +651,14 @@ function localActListFromWorkflowTemplate(workflowTemplate, id, createdAt) {
 export function buildLocalFlowRecord(entry = {}, userContext = {}) {
   const hydrated = hydrateApplicationRecord(entry, mergeContext(userContext, userContextFromRecord(entry.record)));
   const createdAt = formatDateTime(createdDate(hydrated));
+  const approvedAt = localApprovalTime(hydrated);
   const teachers = selectedApprover(hydrated.id);
-  const templateActList = localActListFromWorkflowTemplate(userContext.workflowTemplate, hydrated.id, createdAt);
+  const templateActList = localActListFromWorkflowTemplate(
+    userContext.workflowTemplate,
+    hydrated.id,
+    createdAt,
+    approvedAt,
+  );
 
   return {
     submitId: hydrated.id,
@@ -653,7 +678,7 @@ export function buildLocalFlowRecord(entry = {}, userContext = {}) {
         taskList: teachers.map((teacher, index) => ({
           taskId: `${hydrated.id}-teacher-${index + 1}`,
           handleUserName: teacher,
-          handleTime: index === 0 ? createdAt : '',
+          handleTime: index === 0 ? approvedAt : '',
           handleRemark: index === 0 ? '同意' : '',
           handleType: index === 0 ? 1 : 0,
           isHandleDev: 0,

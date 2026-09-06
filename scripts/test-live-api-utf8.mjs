@@ -239,6 +239,20 @@ function detailLabels(submitInfoData) {
   );
 }
 
+function localDateTimeValue(value) {
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/u);
+  assert.ok(match, `Expected a local date-time string, received: ${value}`);
+  const [, year, month, day, hour, minute, second] = match;
+  return new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+  ).getTime();
+}
+
 const paramLabels = new Map(localRecord.paramList.map((item) => [item.label, item.value]));
 assert.equal(localRecord.title2, '张三 发起的申请');
 assert.equal(paramLabels.get('学号'), '20260001');
@@ -293,6 +307,9 @@ assert.equal(flowRecord.data.actList[0].multiTypeId, 2);
 assert.equal(flowRecord.data.actList[0].taskList.filter((task) => task.handleType === 1).length, 1);
 assert.deepEqual(flowRecord.data.actList[0].taskList.map((task) => task.handleUserName), ['测试班主任']);
 assert.deepEqual(flowRecord.data.actList[1].taskList.map((task) => task.handleUserName), ['测试抄送人']);
+const approvalTask = flowRecord.data.actList[0].taskList.find((task) => task.handleType === 1);
+const approvalDelay = (localDateTimeValue(approvalTask.handleTime) - localDateTimeValue(localRecord.title1)) / 1000;
+assert.ok(approvalDelay >= 10 && approvalDelay <= 30, `Expected 10-30s approval delay, received ${approvalDelay}s`);
 assert.deepEqual({
   cancel: workflowStatus.data.cancel,
   approval: workflowStatus.data.approval,

@@ -7,9 +7,11 @@ import {
   buildLocalFlowRecord,
   buildLocalSubmitInfo,
   buildLocalWorkflowStatus,
+  approvalDelaySeconds,
   deriveUserContextFromOriginRecords,
   deriveWorkflowTemplateFromOriginFlow,
   hydrateApplicationRecord,
+  localApprovalTime,
   loadApplications,
   mergeRecords,
   normalizeApplication,
@@ -281,7 +283,13 @@ function record(title1, id) {
   assert.equal(pendingTeachers.length, 1);
   assert.ok(['王彤彤', '赵志慧'].includes(approvedTeachers[0].handleUserName));
   assert.equal(approvedTeachers[0].handleRemark, '同意');
-  assert.equal(approvedTeachers[0].handleTime, '2026-06-11 19:16:03');
+  assert.equal(approvalDelaySeconds(entry), approvalDelaySeconds(entry));
+  assert.ok(approvalDelaySeconds(entry) >= 10 && approvalDelaySeconds(entry) <= 30);
+  assert.equal(
+    approvedTeachers[0].handleTime,
+    localApprovalTime(entry),
+  );
+  assert.match(approvedTeachers[0].handleTime, /^2026-06-11 19:16:(1[3-9]|2\d|3[0-3])$/u);
   assert.equal(buildLocalFlowRecord(entry, userContext).actList[0].taskList[0].handleUserName, teacherNode.taskList[0].handleUserName);
   const copyNode = flowRecord.actList[1];
   assert.equal(copyNode.actTypeId, 2);
@@ -348,6 +356,7 @@ function record(title1, id) {
   assert.deepEqual(flowRecord.actList[0].taskList.map((task) => task.handleUserName), ['测试班主任']);
   assert.deepEqual(flowRecord.actList[1].taskList.map((task) => task.handleUserName), ['测试抄送人']);
   assert.equal(flowRecord.actList[0].taskList[0].handleRemark, '同意');
+  assert.equal(flowRecord.actList[0].taskList[0].handleTime, localApprovalTime(entry));
   assert.equal(flowRecord.actList[0].actId, `${entry.id}-origin-act-1`);
   assert.equal(flowRecord.actList[0].taskList[0].taskId, `${entry.id}-origin-act-1-task-1`);
 }
