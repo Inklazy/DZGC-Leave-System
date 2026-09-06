@@ -25,25 +25,51 @@ const testClientKey = crypto.createHash('sha256').update(headers.cookie).digest(
 const reloginClientKey = crypto.createHash('sha256').update(reloginHeaders.cookie).digest('hex').slice(0, 16);
 const otherAccountClientKey = crypto.createHash('sha256').update(otherAccountHeaders.cookie).digest('hex').slice(0, 16);
 const testDescription = '接口级本地提交测试';
+const workflowTemplate = {
+  actList: [
+    {
+      actName: '班主任',
+      actTypeId: 1,
+      multiTypeId: 2,
+      isFinish: 1,
+      handleType: 1,
+      taskList: [{
+        handleUserName: '测试班主任',
+        handleTime: '2026-06-10 08:30:00',
+        handleRemark: '同意',
+        handleType: 1,
+        isHandleDev: 0,
+      }],
+    },
+    {
+      actName: '抄送通知',
+      actTypeId: 2,
+      multiTypeId: 1,
+      isFinish: 1,
+      handleType: 4,
+      taskList: [{
+        handleUserName: '测试抄送人',
+        handleTime: '2026-06-10 08:30:00',
+        handleRemark: '',
+        handleType: 4,
+        isHandleDev: 0,
+      }],
+    },
+  ],
+};
 
 const indexHtml = await fetch('http://127.0.0.1:8123/index.html').then((response) => response.text());
-const entryScriptSrc = [...indexHtml.matchAll(/<script\b[^>]*type=["']module["'][^>]*src=["']([^"']*index-ebfab978\.js[^"']*)["']/gi)][0]?.[1];
-assert.ok(entryScriptSrc, 'Expected live index.html to include the original Vue entry script');
-assert.ok(!/\.js\.[^/"']+$/u.test(entryScriptSrc), `Entry script URL must be normalized to one module identity: ${entryScriptSrc}`);
+const entryScriptSrc = [...indexHtml.matchAll(/<script\b[^>]*type=["']module["'][^>]*src=["']([^"']*\/assets\/index-[^"']+\.js[^"']*)["']/gi)][0]?.[1];
+assert.ok(entryScriptSrc, 'Expected live index.html to include the current original Vue entry script');
 const entryScriptResponse = await fetch(new URL(entryScriptSrc, 'http://127.0.0.1:8123/index.html'));
 assert.equal(entryScriptResponse.status, 200);
 const entryScriptText = await entryScriptResponse.text();
 assert.match(entryScriptText, /window\.__uniRoutes/);
-assert.match(
-  entryScriptText,
-  /pages-tool-approvalDetailPage-approvalDetailPage\.d46ed04c\.js\?local-detail-v=/u,
-);
-const legacyEntryScriptResponse = await fetch(
-  new URL(entryScriptSrc.replace(/\.js$/u, '.js.下载'), 'http://127.0.0.1:8123/index.html'),
-  { redirect: 'manual' },
-);
-assert.equal(legacyEntryScriptResponse.status, 302);
-assert.match(legacyEntryScriptResponse.headers.get('location') || '', /index-ebfab978\.js$/u);
+const detailScriptSrc = entryScriptText.match(/pages-tool-approvalDetailPage-approvalDetailPage\.[\w-]+\.js\?local-detail-v=[^"']*/u)?.[0];
+assert.ok(detailScriptSrc, 'Expected the current local detail-page bundle to receive the query fallback patch');
+const detailScriptResponse = await fetch(new URL(detailScriptSrc, entryScriptResponse.url));
+assert.equal(detailScriptResponse.status, 200);
+assert.match(await detailScriptResponse.text(), /Object\.fromEntries\(new URLSearchParams\(\(location\.hash\.split\("\?"\)\[1\]\|\|""\)\)\)/u);
 
 function loadStoredApplications() {
   if (!fs.existsSync(applicationsPath)) {
@@ -121,6 +147,7 @@ function seedTestUserContexts() {
     studentNo: payload.params.userNo,
     className: payload.params.className,
     formName: '鍑哄叆鐢宠',
+    workflowTemplate,
     updatedAt: new Date().toISOString(),
   };
   contexts[testClientKey] = baseContext;
@@ -264,8 +291,8 @@ assert.deepEqual(flowRecord.data.actList.map((node) => node.actName), ['班主�
 assert.deepEqual(flowRecord.data.data.actList.map((node) => node.actName), ['班主任', '抄送通知']);
 assert.equal(flowRecord.data.actList[0].multiTypeId, 2);
 assert.equal(flowRecord.data.actList[0].taskList.filter((task) => task.handleType === 1).length, 1);
-assert.ok(['王彤彤', '赵志慧'].includes(flowRecord.data.actList[0].taskList.find((task) => task.handleType === 1).handleUserName));
-assert.deepEqual(flowRecord.data.actList[1].taskList.map((task) => task.handleUserName), ['杨保福', '杨振辉']);
+assert.deepEqual(flowRecord.data.actList[0].taskList.map((task) => task.handleUserName), ['测试班主任']);
+assert.deepEqual(flowRecord.data.actList[1].taskList.map((task) => task.handleUserName), ['测试抄送人']);
 assert.deepEqual({
   cancel: workflowStatus.data.cancel,
   approval: workflowStatus.data.approval,

@@ -11,6 +11,7 @@ import {
   buildLocalWorkflowStatus,
   createLocalOnlyApplyResponse,
   deriveUserContextFromOriginRecords,
+  deriveWorkflowTemplateFromOriginFlow,
   findApplicationByLocalId,
   hydrateApplicationRecord,
   loadApplications,
@@ -32,8 +33,8 @@ const baseDataEndpoint = '/api-general/account/getIndexDataComm';
 const submitInfoEndpoint = '/api-general/ScBusinessFormSubmit/querySubmitInfo';
 const flowRecordEndpoint = '/api-general/workflow/flowRecord';
 const workflowStatusEndpoint = '/api-general/workflow/app/status';
-const detailBundleName = 'pages-tool-approvalDetailPage-approvalDetailPage.d46ed04c.js';
 const detailBundleVersion = '20260611-local-detail';
+const liveAppShellPaths = new Set(['/', '/index.html', '/home.html', '/out.html', '/apply.html', '/records.html']);
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -144,11 +145,11 @@ function normalizeSavedScriptUrls(text) {
 function rewriteTextForLocalOrigin(text, req) {
   const localOrigin = `http://${req.headers.host || `127.0.0.1:${port}`}`;
   const rewritten = normalizeSavedScriptUrls(text)
-    .replaceAll(detailBundleName, `${detailBundleName}?local-detail-v=${detailBundleVersion}`)
+    .replace(/(pages-tool-approvalDetailPage-approvalDetailPage\.[\w-]+\.js)(?!\?local-detail-v=)/gu, `$1?local-detail-v=${detailBundleVersion}`)
     .replaceAll('http://esp.qmxy.com', localOrigin)
     .replaceAll('https://esp.qmxy.com', localOrigin);
   const reqUrl = new URL(req.url || '/', localOrigin);
-  if (reqUrl.pathname.includes('pages-tool-approvalDetailPage-approvalDetailPage.d46ed04c.js')) {
+  if (/pages-tool-approvalDetailPage-approvalDetailPage\.[\w-]+\.js$/u.test(reqUrl.pathname)) {
     return patchApprovalDetailPageScript(rewritten);
   }
   return rewritten;
@@ -220,6 +221,35 @@ function cleanContext(context = {}) {
   return cleaned;
 }
 
+function workflowTemplateFromContext(context = {}) {
+  const template = deriveWorkflowTemplateFromOriginFlow(context.workflowTemplate);
+  return template?.actList?.length ? template : null;
+}
+
+function accountKeyFromContext(context = {}) {
+  return String(context.userNo || context.studentNo || '').trim();
+}
+
+function workflowTemplateForAccount(context, contexts) {
+  const accountKey = accountKeyFromContext(context);
+  if (!accountKey) {
+    return null;
+  }
+
+  const candidates = Object.values(contexts)
+    .filter((candidate) => accountKeyFromContext(candidate) === accountKey)
+    .sort((left, right) => Date.parse(right.updatedAt || '') - Date.parse(left.updatedAt || ''));
+
+  for (const candidate of candidates) {
+    const template = workflowTemplateFromContext(candidate);
+    if (template) {
+      return template;
+    }
+  }
+
+  return null;
+}
+
 function mergeUserContexts(...contexts) {
   const merged = {};
   for (const context of contexts) {
@@ -276,16 +306,23 @@ function allUserContexts() {
 
 function saveContextForClient(clientKey, context) {
   const cleaned = cleanContext(context);
-  if (!Object.keys(cleaned).length) {
-    return contextForClient(clientKey);
-  }
-
   const contexts = loadJsonObject(userContextsPath);
   const existing = contexts[clientKey] || {};
+  const suppliedTemplate = workflowTemplateFromContext(context);
+  const savedTemplate = workflowTemplateFromContext(existing);
+  const accountTemplate = workflowTemplateForAccount({ ...existing, ...cleaned }, contexts);
+  const workflowTemplate = suppliedTemplate || savedTemplate || accountTemplate;
+  if (!Object.keys(cleaned).length && !workflowTemplate) {
+    return existing;
+  }
+
   const merged = {
     ...mergeUserContexts(cleaned, existing),
     updatedAt: new Date().toISOString(),
   };
+  if (workflowTemplate) {
+    merged.workflowTemplate = workflowTemplate;
+  }
   contexts[clientKey] = merged;
   saveJsonObject(userContextsPath, contexts);
   return merged;
@@ -300,7 +337,7 @@ async function ensureUserContext(req) {
 
   try {
     const reqUrl = new URL(baseDataEndpoint, `http://${req.headers.host || '127.0.0.1'}`);
-    const remoteResponse = await fetchTarget(req, reqUrl, null);
+    const remoteResponse = await fetchTarget(req, reqUrl, null, undefined, 'GET');
     const remoteType = headerValue(remoteResponse.headers, 'content-type') || 'application/json; charset=utf-8';
     if (!isTextualContentType(remoteType)) {
       return existing;
@@ -487,13 +524,14 @@ function targetRequestHeaders(req, body) {
   return headers;
 }
 
-async function fetchTarget(req, reqUrl, localPath, bodyOverride) {
+async function fetchTarget(req, reqUrl, localPath, bodyOverride, methodOverride) {
   const remoteUrl = remoteUrlFor(reqUrl, localPath);
-  const body = bodyOverride ?? (['GET', 'HEAD'].includes(req.method || 'GET') ? undefined : await readRequestBody(req));
+  const method = methodOverride || req.method || 'GET';
+  const body = bodyOverride ?? (['GET', 'HEAD'].includes(method) ? undefined : await readRequestBody(req));
   const headers = targetRequestHeaders(req, body);
 
   return requestViaNode(remoteUrl, {
-    method: req.method || 'GET',
+    method,
     headers,
     body,
   });
@@ -517,6 +555,82 @@ async function proxyToTarget(req, res, reqUrl, localPath, bodyOverride) {
   const bytes = remoteResponse.body;
   res.writeHead(remoteResponse.status, responseHeaders(remoteResponse, bytes.length, false));
   res.end(bytes);
+}
+
+function injectLiveGuard(text) {
+  const script = '<script src="/live-guard.js"></script>';
+  if (text.includes(script)) {
+    return text;
+  }
+
+  return text.includes('</body>')
+    ? text.replace('</body>', `${script}</body>`)
+    : `${text}${script}`;
+}
+
+async function serveCurrentOriginAppShell(req, res) {
+  const localOrigin = `http://${req.headers.host || `127.0.0.1:${port}`}`;
+  const shellUrl = new URL('/', localOrigin);
+  const remoteResponse = await fetchTarget(req, shellUrl, null);
+  const remoteType = headerValue(remoteResponse.headers, 'content-type') || 'text/html; charset=utf-8';
+
+  if (!isTextualContentType(remoteType)) {
+    const bytes = remoteResponse.body;
+    res.writeHead(remoteResponse.status, responseHeaders(remoteResponse, bytes.length, false));
+    res.end(bytes);
+    return;
+  }
+
+  const rewritten = injectLiveGuard(rewriteTextForLocalOrigin(remoteResponse.body.toString('utf8'), req));
+  const bytes = Buffer.from(rewritten, 'utf8');
+  res.writeHead(remoteResponse.status, responseHeaders(remoteResponse, bytes.length, true));
+  res.end(bytes);
+}
+
+function originRecordsFromEnvelope(envelope = {}) {
+  const data = envelope?.data && typeof envelope.data === 'object' ? envelope.data : envelope;
+  return Array.isArray(data?.records) ? data.records : [];
+}
+
+function latestOriginProcessId(envelope = {}) {
+  const record = originRecordsFromEnvelope(envelope).find((item) => {
+    const processId = String(item?.processId || '').trim();
+    return processId &&
+      !processId.startsWith('local-') &&
+      String(item?.processStatus ?? '') === '2';
+  });
+  return record?.processId || '';
+}
+
+function saveWorkflowTemplateForClient(req, originFlowEnvelope) {
+  const template = deriveWorkflowTemplateFromOriginFlow(originFlowEnvelope);
+  if (!template) {
+    return contextForClient(clientKeyFromRequest(req));
+  }
+
+  return saveContextForClient(clientKeyFromRequest(req), { workflowTemplate: template });
+}
+
+async function captureLatestOriginWorkflowTemplate(req, originEnvelope) {
+  const processId = latestOriginProcessId(originEnvelope);
+  if (!processId) {
+    return contextForClient(clientKeyFromRequest(req));
+  }
+
+  const localOrigin = `http://${req.headers.host || `127.0.0.1:${port}`}`;
+  const flowUrl = new URL(flowRecordEndpoint, localOrigin);
+  flowUrl.searchParams.set('processId', processId);
+  const remoteResponse = await fetchTarget(req, flowUrl, null, undefined, 'GET');
+  if (remoteResponse.status >= 400) {
+    return contextForClient(clientKeyFromRequest(req));
+  }
+
+  const remoteType = headerValue(remoteResponse.headers, 'content-type') || 'application/json; charset=utf-8';
+  if (!isTextualContentType(remoteType)) {
+    return contextForClient(clientKeyFromRequest(req));
+  }
+
+  return saveWorkflowTemplateForClient(req, JSON.parse(remoteResponse.body.toString('utf8')));
 }
 
 async function handleSubmitForm(req, res) {
@@ -560,7 +674,12 @@ async function handleGetMyApply(req, res, reqUrl) {
 
     const originEnvelope = JSON.parse(remoteResponse.body.toString('utf8'));
     const derivedContext = deriveUserContextFromOriginRecords(originEnvelope);
-    const userContext = saveContextForClient(clientKey, derivedContext);
+    let userContext = saveContextForClient(clientKey, derivedContext);
+    try {
+      userContext = await captureLatestOriginWorkflowTemplate(req, originEnvelope);
+    } catch {
+      // Keep the most recently saved template when the optional origin detail lookup fails.
+    }
     const localApplications = localApplicationsForClient(req, userContext);
     const localRecords = recordsFromApplications(localApplications, userContext);
     const mergedEnvelope = mergeRecords(originEnvelope, localRecords, query);
@@ -723,6 +842,11 @@ const server = http.createServer(async (req, res) => {
         'access-control-allow-headers': req.headers['access-control-request-headers'] || '*',
       });
       res.end();
+      return;
+    }
+
+    if (req.method === 'GET' && liveAppShellPaths.has(reqUrl.pathname)) {
+      await serveCurrentOriginAppShell(req, res);
       return;
     }
 

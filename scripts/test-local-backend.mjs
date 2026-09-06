@@ -8,6 +8,7 @@ import {
   buildLocalSubmitInfo,
   buildLocalWorkflowStatus,
   deriveUserContextFromOriginRecords,
+  deriveWorkflowTemplateFromOriginFlow,
   hydrateApplicationRecord,
   loadApplications,
   mergeRecords,
@@ -292,6 +293,63 @@ function record(title1, id) {
     approval: false,
     transfer: false,
   });
+}
+
+{
+  const entry = normalizeApplication(realTransitPayload, {
+    ...userContext,
+    now: new Date('2026-06-11T19:16:03+08:00'),
+  });
+  const template = deriveWorkflowTemplateFromOriginFlow({
+    data: {
+      actList: [
+        {
+          actId: 'origin-teacher',
+          actName: '班主任',
+          actTypeId: 1,
+          multiTypeId: 2,
+          isFinish: 1,
+          handleType: 1,
+          taskList: [{
+            taskId: 'origin-teacher-task',
+            handleUserName: '测试班主任',
+            handleTime: '2026-06-10 08:30:00',
+            handleRemark: '同意',
+            handleType: 1,
+            isHandleDev: 0,
+          }],
+        },
+        {
+          actId: 'origin-copy',
+          actName: '抄送通知',
+          actTypeId: 2,
+          multiTypeId: 1,
+          isFinish: 1,
+          handleType: 4,
+          taskList: [{
+            taskId: 'origin-copy-task',
+            handleUserName: '测试抄送人',
+            handleTime: '2026-06-10 08:30:00',
+            handleRemark: '',
+            handleType: 4,
+            isHandleDev: 0,
+          }],
+        },
+      ],
+    },
+  });
+
+  assert.ok(template);
+  const flowRecord = buildLocalFlowRecord(entry, {
+    ...userContext,
+    workflowTemplate: template,
+  });
+  assert.deepEqual(flowRecord.actList.map((node) => node.actName), ['班主任', '抄送通知']);
+  assert.deepEqual(flowRecord.actList[0].taskList.map((task) => task.handleUserName), ['测试班主任']);
+  assert.deepEqual(flowRecord.actList[1].taskList.map((task) => task.handleUserName), ['测试抄送人']);
+  assert.equal(flowRecord.actList[0].taskList[0].handleRemark, '同意');
+  assert.equal(flowRecord.actList[0].actId, `${entry.id}-origin-act-1`);
+  assert.equal(flowRecord.actList[0].taskList[0].taskId, `${entry.id}-origin-act-1-task-1`);
 }
 
 {

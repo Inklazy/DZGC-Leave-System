@@ -563,10 +563,77 @@ function selectedApprover(id) {
   ];
 }
 
+function flowDataFromEnvelope(envelope = {}) {
+  const data = envelope?.data && typeof envelope.data === 'object'
+    ? envelope.data
+    : envelope;
+  if (Array.isArray(data?.actList)) {
+    return data;
+  }
+  if (Array.isArray(data?.data?.actList)) {
+    return data.data;
+  }
+  return {};
+}
+
+function workflowTaskTemplate(task = {}) {
+  return {
+    handleUserName: compactString(task.handleUserName || task.userName || task.realName || task.name) || EMPTY_VALUE,
+    handleTime: task.handleTime || task.approvalTime || task.handleDate || '',
+    handleRemark: task.handleRemark || task.remark || task.comment || '',
+    handleType: task.handleType ?? 0,
+    isHandleDev: task.isHandleDev ?? 0,
+  };
+}
+
+/**
+ * Keeps the visible workflow shape from a real approved record while dropping
+ * origin IDs so the template can be safely reused by a local application.
+ */
+export function deriveWorkflowTemplateFromOriginFlow(originResponse = {}) {
+  const flowData = flowDataFromEnvelope(originResponse);
+  if (!Array.isArray(flowData.actList) || !flowData.actList.length) {
+    return null;
+  }
+
+  const actList = flowData.actList
+    .filter((act) => act && typeof act === 'object')
+    .map((act) => {
+      return {
+        actName: compactString(act.actName) || '审批',
+        actTypeId: act.actTypeId ?? 1,
+        multiTypeId: act.multiTypeId ?? 1,
+        isFinish: act.isFinish ?? 1,
+        handleType: act.handleType ?? 1,
+        taskList: Array.isArray(act.taskList) ? act.taskList.map(workflowTaskTemplate) : [],
+      };
+    });
+
+  return actList.length ? { actList } : null;
+}
+
+function localActListFromWorkflowTemplate(workflowTemplate, id, createdAt) {
+  const template = deriveWorkflowTemplateFromOriginFlow(workflowTemplate);
+  if (!template) {
+    return [];
+  }
+
+  return template.actList.map((act, actIndex) => ({
+    ...act,
+    actId: `${id}-origin-act-${actIndex + 1}`,
+    taskList: (act.taskList || []).map((task, taskIndex) => ({
+      ...task,
+      taskId: `${id}-origin-act-${actIndex + 1}-task-${taskIndex + 1}`,
+      handleTime: task.handleTime || (Number(task.handleType) > 0 ? createdAt : ''),
+    })),
+  }));
+}
+
 export function buildLocalFlowRecord(entry = {}, userContext = {}) {
   const hydrated = hydrateApplicationRecord(entry, mergeContext(userContext, userContextFromRecord(entry.record)));
   const createdAt = formatDateTime(createdDate(hydrated));
   const teachers = selectedApprover(hydrated.id);
+  const templateActList = localActListFromWorkflowTemplate(userContext.workflowTemplate, hydrated.id, createdAt);
 
   return {
     submitId: hydrated.id,
@@ -575,7 +642,7 @@ export function buildLocalFlowRecord(entry = {}, userContext = {}) {
     businessNo: hydrated.payload?.businessNo,
     formId: hydrated.payload?.formId,
     processStatus: PASS_STATUS,
-    actList: [
+    actList: templateActList.length ? templateActList : [
       {
         actId: `${hydrated.id}-teacher`,
         actName: '班主任',
