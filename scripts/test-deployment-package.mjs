@@ -16,6 +16,7 @@ const deployDocPath = path.join(root, 'DEPLOY.md');
 const dockerfilePath = path.join(root, 'Dockerfile');
 const dockerignorePath = path.join(root, '.dockerignore');
 const composePath = path.join(root, 'compose.yaml');
+const vpsBuildComposePath = path.join(root, 'compose.vps-build.yaml');
 const workflowPath = path.join(root, '.github', 'workflows', 'docker.yml');
 
 assert.ok(fs.existsSync(packagePath), 'package.json is required for server deployment');
@@ -24,6 +25,7 @@ assert.ok(fs.existsSync(deployDocPath), 'DEPLOY.md is required for beginner depl
 assert.ok(fs.existsSync(dockerfilePath), 'Dockerfile is required for container deployment');
 assert.ok(fs.existsSync(dockerignorePath), '.dockerignore is required for container deployment');
 assert.ok(fs.existsSync(composePath), 'compose.yaml is required for container deployment');
+assert.ok(fs.existsSync(vpsBuildComposePath), 'compose.vps-build.yaml is required for VPS-local image builds');
 assert.ok(fs.existsSync(workflowPath), 'GitHub Actions Docker workflow is required');
 assert.ok(!fs.existsSync(obsoleteCliConfigPath), 'obsolete serverless CLI config should not be included in the server-only deployment package');
 assert.ok(!fs.existsSync(obsoleteServerlessTestPath), 'obsolete serverless backend test should not be included in the server-only deployment package');
@@ -80,6 +82,16 @@ for (const required of [
   assert.ok(compose.includes(required), `compose.yaml missing: ${required}`);
 }
 
+const vpsBuildCompose = fs.readFileSync(vpsBuildComposePath, 'utf8');
+for (const required of [
+  'image: dzgc-leave-system:local',
+  'build:',
+  'context: .',
+  'dockerfile: Dockerfile',
+]) {
+  assert.ok(vpsBuildCompose.includes(required), `compose.vps-build.yaml missing: ${required}`);
+}
+
 const workflow = fs.readFileSync(workflowPath, 'utf8');
 for (const required of [
   'packages: write',
@@ -99,6 +111,9 @@ for (const required of [
   'Docker',
   'GHCR',
   'docker compose pull',
+  'compose.vps-build.yaml',
+  'docker compose -f compose.yaml -f compose.vps-build.yaml build --pull',
+  'git archive --format=tar.gz',
   '/opt/leave-system-data',
   'ghcr.io/zekty/dzgc-leave-system:latest',
 ]) {

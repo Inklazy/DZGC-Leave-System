@@ -1,0 +1,8 @@
+# Combine with compose.yaml to build the image on the VPS instead of pulling it
+# from GitHub Container Registry. The runtime data volume remains unchanged.
+services:
+  leave-system:
+    image: dzgc-leave-system:local
+    build:
+      context: .
+      dockerfile: Dockerfile

@@ -2,13 +2,16 @@
 
 请假系统 Docker 服务器版。应用代理原站登录、验证码和页面接口，本地提交记录保存在 VPS 的 JSON 数据目录中。
 
-## 架构
+## 部署路线
 
 ```text
-GitHub push -> GitHub Actions -> GHCR image -> VPS docker compose pull -> Docker -> Caddy :80
+推荐：GitHub / 本地源码 -> VPS docker compose build -> Docker -> Caddy :80
+可选：GitHub push -> GitHub Actions -> GHCR image -> VPS docker compose pull -> Docker -> Caddy :80
 ```
 
-镜像：
+推荐路线完全不依赖 GitHub Actions 或 GHCR。VPS 在本机根据 `Dockerfile` 构建镜像，适合 Actions 或 GHCR 无法使用的情况。
+
+GHCR 镜像路线仍保留为可选方案：
 
 ```text
 ghcr.io/zekty/dzgc-leave-system:latest
@@ -23,7 +26,67 @@ VPS: /opt/leave-system-data
 
 其中 `applications.json` 和 `user-contexts.json` 是请假记录和账号展示信息。不要删除 `/opt/leave-system-data`。
 
-## VPS 首次部署
+## VPS 本机构建部署（推荐）
+
+确认 VPS 已安装 Docker Engine、Docker Compose Plugin 和 Git：
+
+```bash
+docker --version
+docker compose version
+git --version
+```
+
+创建持久化数据目录。请假记录始终放在这个目录，更新源码或重建容器都不会删除它：
+
+```bash
+sudo mkdir -p /opt/leave-system-data
+sudo chown -R 1000:1000 /opt/leave-system-data
+```
+
+### 方式 A：VPS 可以访问 GitHub
+
+首次部署时克隆源码：
+
+```bash
+sudo git clone https://github.com/ZekTy/DZGC-Leave-System.git /opt/leave-system
+cd /opt/leave-system
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml build --pull
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml up -d --no-build
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml ps
+```
+
+日常更新只需在 VPS 执行：
+
+```bash
+cd /opt/leave-system
+sudo git pull --ff-only origin main
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml build --pull
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml up -d --no-build
+sudo docker image prune -f
+```
+
+### 方式 B：VPS 不能访问 GitHub
+
+在 Windows 项目目录创建不含 `data/` 的源码包，再上传到 VPS。该包只包含 Git 已跟踪的项目文件：
+
+```powershell
+git archive --format=tar.gz --output=leave-system-source.tar.gz main
+scp .\leave-system-source.tar.gz root@你的_VPS_IP:/tmp/
+```
+
+也可以用 WinSCP 上传 `leave-system-source.tar.gz` 到 VPS 的 `/tmp/` 目录。然后在 VPS 执行：
+
+```bash
+sudo mkdir -p /opt/leave-system
+sudo tar -xzf /tmp/leave-system-source.tar.gz -C /opt/leave-system
+cd /opt/leave-system
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml build --pull
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml up -d --no-build
+```
+
+后续更新时，重新创建并上传同名源码包，执行上述解压、构建、启动三条命令即可。不要上传或覆盖 `/opt/leave-system-data`。
+
+## GHCR 镜像部署（可选）
 
 确认 VPS 已安装 Docker Engine 和 Compose Plugin：
 
@@ -98,13 +161,13 @@ sudo cp -a /opt/leave-system/data/. /opt/leave-system-data/
 sudo chown -R 1000:1000 /opt/leave-system-data
 ```
 
-启动 Docker 版本并确认登录、提交、记录详情都正常：
+使用 VPS 本机构建启动 Docker 版本，并确认登录、提交、记录详情都正常：
 
 ```bash
 cd /opt/leave-system
-docker compose pull
-docker compose up -d
-docker compose ps
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml build --pull
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml up -d --no-build
+sudo docker compose -f compose.yaml -f compose.vps-build.yaml ps
 ```
 
 确认无误后删除旧 systemd 服务文件：
@@ -114,19 +177,9 @@ sudo rm -f /etc/systemd/system/leave-system.service
 sudo systemctl daemon-reload
 ```
 
-不要删除 `/opt/leave-system-data`。清理旧项目文件前先预览：
+不要删除 `/opt/leave-system-data`。VPS 本机构建路线需要保留 `/opt/leave-system` 中的源码，因此不要执行旧项目目录清理命令。
 
-```bash
-sudo find /opt/leave-system -mindepth 1 -maxdepth 1 ! -name compose.yaml -print
-```
-
-确认列表正确后才删除旧文件，保留 `compose.yaml`：
-
-```bash
-sudo find /opt/leave-system -mindepth 1 -maxdepth 1 ! -name compose.yaml -exec rm -rf -- {} +
-```
-
-## 日常更新
+## GHCR 日常更新
 
 推送到 `main` 后，GitHub Actions 会自动测试、构建并发布新镜像。VPS 更新：
 
@@ -139,7 +192,7 @@ docker image prune -f
 
 更新不会删除 `/opt/leave-system-data` 中的请假记录。
 
-## 回滚
+## GHCR 回滚
 
 每次提交还会生成 SHA 镜像，例如：
 
