@@ -10,6 +10,8 @@ services:
       HOST: 0.0.0.0
       TZ: Asia/Shanghai
       LEAVE_SYSTEM_ROOT: /app
+      LEAVE_SYSTEM_DATA_DIR: /app/data
+      LEAVE_SYSTEM_FORWARD_SUBMIT: "${LEAVE_SYSTEM_FORWARD_SUBMIT:-0}"
       LEAVE_SYSTEM_TARGET: http://esp.qmxy.com
     ports:
       - "127.0.0.1:8123:8123"

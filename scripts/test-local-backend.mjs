@@ -64,9 +64,9 @@ const otherTransitPayload = {
 };
 
 const userContext = {
-  name: '钱思成',
-  studentNo: '1505250147',
-  className: '2025级网络营销与直播电商1班',
+  name: '测试用户',
+  studentNo: 'TEST-0001',
+  className: '测试班级',
   formName: '出入申请',
 };
 
@@ -122,11 +122,11 @@ function record(title1, id) {
   const originContext = deriveUserContextFromOriginRecords({
     data: {
       records: [{
-        title2: '钱思成 发起的申请',
+        title2: '测试用户 发起的申请',
         paramList: [
           { label: '表单', value: '出入申请' },
-          { label: '学号', value: '1505250147' },
-          { label: '班级', value: '2025级网络营销与直播电商1班' },
+          { label: '学号', value: 'TEST-0001' },
+          { label: '班级', value: '测试班级' },
           { label: '进出事由', value: '事假' },
         ],
       }],
@@ -142,11 +142,11 @@ function record(title1, id) {
     now: new Date('2026-06-11T19:16:03+08:00'),
   });
 
-  assert.equal(normalized.record.title2, '钱思成 发起的申请');
+  assert.equal(normalized.record.title2, '测试用户 发起的申请');
   const paramLabels = labels(normalized.record);
   assert.equal(paramLabels.get('表单'), '出入申请');
-  assert.equal(paramLabels.get('学号'), '1505250147');
-  assert.equal(paramLabels.get('班级'), '2025级网络营销与直播电商1班');
+  assert.equal(paramLabels.get('学号'), 'TEST-0001');
+  assert.equal(paramLabels.get('班级'), '测试班级');
   assert.equal(paramLabels.get('开始时间'), '2026-06-11 19:15:57');
   assert.equal(paramLabels.get('结束时间'), '2026-06-11 23:59:59');
   assert.equal(paramLabels.get('进出事由'), '事假');
@@ -182,19 +182,19 @@ function record(title1, id) {
   assert.equal(hydrated.id, oldEntry.id);
   assert.equal(hydrated.record.submitId, oldEntry.id);
   assert.equal(hydrated.record.title1, oldEntry.record.title1);
-  assert.equal(hydrated.record.title2, '钱思成 发起的申请');
+  assert.equal(hydrated.record.title2, '测试用户 发起的申请');
 
   const paramLabels = labels(hydrated.record);
-  assert.equal(paramLabels.get('学号'), '1505250147');
-  assert.equal(paramLabels.get('班级'), '2025级网络营销与直播电商1班');
+  assert.equal(paramLabels.get('学号'), 'TEST-0001');
+  assert.equal(paramLabels.get('班级'), '测试班级');
   assert.equal(paramLabels.get('进出事由'), '事假');
   assert.equal(paramLabels.get('申请动向'), '申请宿舍免查寝');
   assert.equal(paramLabels.get('事由描述'), '12314');
 
   const [recordFromEntry] = recordsFromApplications([oldEntry], userContext);
   const recordLabels = labels(recordFromEntry);
-  assert.equal(recordLabels.get('学号'), '1505250147');
-  assert.equal(recordLabels.get('班级'), '2025级网络营销与直播电商1班');
+  assert.equal(recordLabels.get('学号'), 'TEST-0001');
+  assert.equal(recordLabels.get('班级'), '测试班级');
   assert.equal(recordLabels.has('事由描述'), false);
 }
 
@@ -213,7 +213,7 @@ function record(title1, id) {
     now: new Date('2026-06-11T19:18:03+08:00'),
   });
   const otherAccountStable = normalizeApplication(realTransitPayload, {
-    userKey: '1505250133',
+    userKey: 'TEST-0002',
     clientKey: 'other-stable-session',
     now: new Date('2026-06-11T19:19:03+08:00'),
   });
@@ -230,19 +230,34 @@ function record(title1, id) {
     'old-session': userContext,
     'other-old-session': {
       name: '鍗曟櫀',
-      studentNo: '1505250133',
+      studentNo: 'TEST-0002',
       className: userContext.className,
       formName: userContext.formName,
     },
     'other-stable-session': {
       name: '鍗曟櫀',
-      studentNo: '1505250133',
+      studentNo: 'TEST-0002',
       className: userContext.className,
       formName: userContext.formName,
     },
   });
 
   assert.deepEqual(scoped.map((entry) => entry.id), [sameAccountLegacy.id, sameAccountStable.id]);
+}
+
+{
+  const unownedLegacyEntry = {
+    id: 'local-unowned',
+    clientKey: '',
+    userKey: '',
+    payload: {},
+    record: {},
+  };
+  assert.deepEqual(
+    selectApplicationsForUser([unownedLegacyEntry], { ...userContext, clientKey: 'new-session' }, {}),
+    [],
+    'unowned legacy records must not be exposed to an authenticated user',
+  );
 }
 
 {
@@ -256,11 +271,11 @@ function record(title1, id) {
 
   assert.equal(submitInfo.submit.processStatus, '2');
   assert.deepEqual(panelNames, ['申请人信息', '申请时间', '申请理由']);
-  assert.equal(detailValues.get('姓名'), '钱思成');
-  assert.equal(detailValues.get('学号'), '1505250147');
+  assert.equal(detailValues.get('姓名'), '测试用户');
+  assert.equal(detailValues.get('学号'), 'TEST-0001');
   assert.equal(detailValues.get('学院'), '数字商贸学院-高职');
-  assert.equal(detailValues.get('专业'), '网络营销与直播电商');
-  assert.equal(detailValues.get('班级'), '2025级网络营销与直播电商1班');
+  assert.equal(detailValues.get('专业'), '测试班级');
+  assert.equal(detailValues.get('班级'), '测试班级');
   assert.equal(detailValues.get('开始时间'), '2026-06-11 19:15:57');
   assert.equal(detailValues.get('结束时间'), '2026-06-11 23:59:59');
   assert.equal(detailValues.get('进出事由'), '事假');

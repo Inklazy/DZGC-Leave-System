@@ -1,5 +1,11 @@
-# Runtime data must remain on the deployment host and outside Git/GHCR images.
+# Runtime data and local secrets.
 data/
+.env
+.env.*
+
+# Local page captures and generated static output. These may contain personal data.
+myhtml/
+leave-system-copy/
 
 # Local output and editor files.
 *.log
@@ -8,3 +14,4 @@ node_modules/
 .idea/
 .DS_Store
 leave-system-source.tar.gz
+*.zip

@@ -23,7 +23,15 @@ import {
 } from './backend-records.mjs';
 
 const liveDir = path.join(root, 'leave-system-live-copy');
-const dataDir = path.join(root, 'data');
+const dataDir = path.resolve(process.env.LEAVE_SYSTEM_DATA_DIR || path.join(root, 'data'));
+const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const forwardSubmit = process.env.LEAVE_SYSTEM_FORWARD_SUBMIT === '1';
+
+function httpError(statusCode, message) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
 const applicationsPath = path.join(dataDir, 'applications.json');
 const userContextsPath = path.join(dataDir, 'user-contexts.json');
 const defaultTarget = 'http://esp.qmxy.com';
@@ -48,6 +56,12 @@ const port = Number(argValue('--port', process.env.PORT || '8123'));
 const host = argValue('--host', process.env.HOST || '0.0.0.0');
 const targetOrigin = argValue('--target', process.env.LEAVE_SYSTEM_TARGET || defaultTarget).replace(/\/$/u, '');
 const targetUrl = new URL(targetOrigin);
+if (!['http:', 'https:'].includes(targetUrl.protocol) || targetUrl.username || targetUrl.password || targetUrl.pathname !== '/' || targetUrl.search || targetUrl.hash) {
+  throw new Error('LEAVE_SYSTEM_TARGET must be an HTTP(S) origin without credentials or path');
+}
+if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  throw new Error('Invalid port');
+}
 
 function contentType(filePath) {
   const lower = filePath.toLowerCase();
@@ -99,7 +113,14 @@ function redirect(res, location) {
 
 async function readRequestBody(req) {
   const chunks = [];
+  let size = 0;
+  const declaredLength = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    throw httpError(413, 'Request body exceeds 1 MiB');
+  }
   for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw httpError(413, 'Request body exceeds 1 MiB');
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -115,7 +136,25 @@ function parseJsonBody(body) {
     return {};
   }
 
-  return JSON.parse(text);
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw httpError(400, 'Invalid JSON');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw httpError(400, 'JSON body must be an object');
+  }
+
+  const pending = [[parsed, 0]];
+  while (pending.length) {
+    const [value, depth] = pending.pop();
+    if (depth > 32) throw httpError(400, 'JSON nesting is too deep');
+    for (const child of Object.values(value)) {
+      if (child && typeof child === 'object') pending.push([child, depth + 1]);
+    }
+  }
+  return parsed;
 }
 
 function safeLocalPath(urlPathname) {
@@ -205,12 +244,13 @@ function loadJsonObject(storagePath) {
 
 function saveJsonObject(storagePath, data) {
   fs.mkdirSync(path.dirname(storagePath), { recursive: true });
-  const tempPath = `${storagePath}.${process.pid}.tmp`;
+  const tempPath = `${storagePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   fs.writeFileSync(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
   fs.renameSync(tempPath, storagePath);
 }
 
 function cleanContext(context = {}) {
+  if (!context || typeof context !== 'object') return {};
   const cleaned = {};
   for (const key of ['name', 'userName', 'studentNo', 'userNo', 'collegeName', 'majorName', 'className', 'clazzName', 'departmentName', 'formName']) {
     const value = context[key];
@@ -222,11 +262,13 @@ function cleanContext(context = {}) {
 }
 
 function workflowTemplateFromContext(context = {}) {
+  if (!context || typeof context !== 'object') return null;
   const template = deriveWorkflowTemplateFromOriginFlow(context.workflowTemplate);
   return template?.actList?.length ? template : null;
 }
 
 function accountKeyFromContext(context = {}) {
+  if (!context || typeof context !== 'object') return '';
   return String(context.userNo || context.studentNo || '').trim();
 }
 
@@ -238,7 +280,7 @@ function workflowTemplateForAccount(context, contexts) {
 
   const candidates = Object.values(contexts)
     .filter((candidate) => accountKeyFromContext(candidate) === accountKey)
-    .sort((left, right) => Date.parse(right.updatedAt || '') - Date.parse(left.updatedAt || ''));
+    .sort((left, right) => Date.parse(right?.updatedAt || '') - Date.parse(left?.updatedAt || ''));
 
   for (const candidate of candidates) {
     const template = workflowTemplateFromContext(candidate);
@@ -280,6 +322,7 @@ function userContextFromBaseData(envelope = {}) {
 }
 
 function contextHasIdentity(context = {}) {
+  if (!context || typeof context !== 'object') return false;
   return Boolean(
     (context.name || context.userName) &&
     (context.studentNo || context.userNo) &&
@@ -306,6 +349,7 @@ function allUserContexts() {
 
 function saveContextForClient(clientKey, context) {
   const cleaned = cleanContext(context);
+  if (!clientKey || clientKey === 'default') return cleaned;
   const contexts = loadJsonObject(userContextsPath);
   const existing = contexts[clientKey] || {};
   const suppliedTemplate = workflowTemplateFromContext(context);
@@ -329,25 +373,36 @@ function saveContextForClient(clientKey, context) {
 }
 
 async function ensureUserContext(req) {
+  if (req.verifiedContext) return req.verifiedContext;
+
   const clientKey = clientKeyFromRequest(req);
+  if (clientKey === 'default') throw httpError(401, 'Authentication required');
+
   const existing = contextForClient(clientKey);
+  // The key contains the login credential; reuse its saved identity for local-only requests.
   if (contextHasIdentity(existing)) {
+    req.verifiedContext = existing;
     return existing;
   }
 
+  const remoteResponse = await fetchTarget(req, new URL(baseDataEndpoint, targetOrigin), null, undefined, 'GET');
+  if (remoteResponse.status === 401 || remoteResponse.status === 403) throw httpError(401, 'Session expired');
+  if (remoteResponse.status !== 200) throw httpError(502, 'Unable to verify session');
+
+  let envelope;
   try {
-    const reqUrl = new URL(baseDataEndpoint, `http://${req.headers.host || '127.0.0.1'}`);
-    const remoteResponse = await fetchTarget(req, reqUrl, null, undefined, 'GET');
-    const remoteType = headerValue(remoteResponse.headers, 'content-type') || 'application/json; charset=utf-8';
-    if (!isTextualContentType(remoteType)) {
-      return existing;
-    }
-
-    const originEnvelope = JSON.parse(remoteResponse.body.toString('utf8'));
-    return saveContextForClient(clientKey, userContextFromBaseData(originEnvelope));
+    envelope = JSON.parse(remoteResponse.body.toString('utf8'));
   } catch {
-    return existing;
+    throw httpError(502, 'Invalid authentication response');
   }
+
+  const context = userContextFromBaseData(envelope);
+  if (!accountKeyFromContext(context) || (envelope.code !== undefined && ![0, 200, '0', '200'].includes(envelope.code))) {
+    throw httpError(401, 'Session expired');
+  }
+
+  req.verifiedContext = saveContextForClient(clientKey, context);
+  return req.verifiedContext;
 }
 
 function localApplicationsForClient(req, userContext = {}) {
@@ -366,26 +421,21 @@ function currentLocalRecords(req, userContext = {}) {
 
 async function findLocalApplicationWithContext(req, localId) {
   const context = await ensureUserContext(req);
-  const scopedEntry = findApplicationByLocalId(localApplicationsForClient(req), localId, context);
-  if (scopedEntry) {
-    return scopedEntry;
-  }
-
-  const allApplications = loadApplications(applicationsPath);
-  const rawEntry = allApplications.find((entry) => [entry.id, entry.record?.submitId, entry.record?.processId, entry.record?.taskId].includes(localId));
-  if (!rawEntry) {
-    return null;
-  }
-
-  const ownerContext = rawEntry.clientKey ? contextForClient(rawEntry.clientKey) : {};
-  return findApplicationByLocalId([rawEntry], localId, mergeUserContexts(context, ownerContext));
+  return findApplicationByLocalId(localApplicationsForClient(req, context), localId, context);
 }
 
 function responseHeaders(remoteResponse, bodyLength, textual) {
   const headers = {};
   for (const [key, value] of Object.entries(remoteResponse.headers)) {
     const lower = key.toLowerCase();
-    if (['content-length', 'transfer-encoding', 'content-encoding', 'connection', 'keep-alive'].includes(lower)) {
+    if ([
+      'content-length',
+      'transfer-encoding',
+      'content-encoding',
+      'connection',
+      'keep-alive',
+      'strict-transport-security',
+    ].includes(lower)) {
       continue;
     }
     if (lower === 'set-cookie') {
@@ -399,7 +449,9 @@ function responseHeaders(remoteResponse, bodyLength, textual) {
   if (setCookies.length) {
     headers['set-cookie'] = setCookies.map((cookie) => cookie
       .replace(/;\s*Domain=[^;]+/ig, '')
-      .replace(/;\s*Secure/ig, ''));
+      .replace(/;\s*Secure/ig, '')
+      .replace(/;\s*SameSite=None/ig, '; SameSite=Lax')
+      .replace(/;\s*Partitioned/ig, ''));
   }
 
   if (textual && !headers['content-type']) {
@@ -410,11 +462,27 @@ function responseHeaders(remoteResponse, bodyLength, textual) {
   return headers;
 }
 
+function proxyIsBypassed(remoteUrl) {
+  const noProxy = process.env.NO_PROXY || process.env.no_proxy || '';
+  if (!noProxy.trim()) return false;
+  const hostname = remoteUrl.hostname.toLowerCase();
+  const port = remoteUrl.port || (remoteUrl.protocol === 'https:' ? '443' : '80');
+  return noProxy.split(',').some((rawRule) => {
+    const rule = rawRule.trim().toLowerCase();
+    if (!rule) return false;
+    if (rule === '*') return true;
+    const [rawRuleHost, rulePort] = rule.split(':');
+    const ruleHost = rawRuleHost.replace(/^\./u, '');
+    const hostMatches = hostname === ruleHost || hostname.endsWith('.' + ruleHost);
+    return hostMatches && (!rulePort || rulePort === port);
+  });
+}
+
 function requestViaNode(remoteUrl, { method, headers, body }) {
   const proxyEnv = remoteUrl.protocol === 'https:'
     ? process.env.HTTPS_PROXY || process.env.HTTP_PROXY
     : process.env.HTTP_PROXY;
-  const proxyUrl = proxyEnv ? new URL(proxyEnv) : null;
+  const proxyUrl = proxyEnv && !proxyIsBypassed(remoteUrl) ? new URL(proxyEnv) : null;
 
   return new Promise((resolve, reject) => {
     const useProxy = proxyUrl && remoteUrl.protocol === 'http:';
@@ -432,7 +500,17 @@ function requestViaNode(remoteUrl, { method, headers, body }) {
       timeout: 30000,
     }, (remoteRes) => {
       const chunks = [];
-      remoteRes.on('data', (chunk) => chunks.push(chunk));
+      let size = 0;
+      remoteRes.on('error', reject);
+      remoteRes.on('aborted', () => reject(new Error('Upstream response aborted')));
+      remoteRes.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > MAX_RESPONSE_BYTES) {
+          remoteRes.destroy(new Error('Upstream response exceeds limit'));
+          return;
+        }
+        chunks.push(chunk);
+      });
       remoteRes.on('end', () => {
         resolve({
           body: Buffer.concat(chunks),
@@ -509,7 +587,16 @@ function targetRequestHeaders(req, body) {
   for (const [name, value] of Object.entries(req.headers)) {
     if (!value) continue;
     const lower = name.toLowerCase();
-    if (['host', 'connection', 'content-length', 'accept-encoding'].includes(lower)) {
+    if ([
+      'host',
+      'connection',
+      'content-length',
+      'transfer-encoding',
+      'accept-encoding',
+      'proxy-connection',
+      'te',
+      'upgrade',
+    ].includes(lower)) {
       continue;
     }
     headers[name] = Array.isArray(value) ? value.join(', ') : value;
@@ -633,20 +720,43 @@ async function captureLatestOriginWorkflowTemplate(req, originEnvelope) {
   return saveWorkflowTemplateForClient(req, JSON.parse(remoteResponse.body.toString('utf8')));
 }
 
-async function handleSubmitForm(req, res) {
+async function handleSubmitForm(req, res, reqUrl) {
   const body = await readRequestBody(req);
   const payload = parseJsonBody(body);
+  validateApplication(payload);
+
   const clientKey = clientKeyFromRequest(req);
   const userContext = await ensureUserContext(req);
+
+  if (forwardSubmit) {
+    const remoteResponse = await fetchTarget(req, reqUrl, null, body);
+    const remoteType = headerValue(remoteResponse.headers, 'content-type') || 'application/json; charset=utf-8';
+    if (isTextualContentType(remoteType)) {
+      const rewritten = rewriteTextForLocalOrigin(remoteResponse.body.toString('utf8'), req);
+      const bytes = Buffer.from(rewritten, 'utf8');
+      res.writeHead(remoteResponse.status, responseHeaders(remoteResponse, bytes.length, true));
+      res.end(bytes);
+      return;
+    }
+
+    const bytes = remoteResponse.body;
+    res.writeHead(remoteResponse.status, responseHeaders(remoteResponse, bytes.length, false));
+    res.end(bytes);
+    return;
+  }
+
   saveApplication(applicationsPath, payload, {
     ...userContext,
     clientKey,
   });
 
+  res.setHeader('x-leave-system-mode', 'local-only');
   sendJson(res, 200, {
     code: 0,
     msg: 'success',
     data: {},
+    localOnly: true,
+    mode: 'local-only',
   });
 }
 
@@ -654,16 +764,20 @@ async function handleGetMyApply(req, res, reqUrl) {
   const body = await readRequestBody(req);
   const query = parseJsonBody(body);
   const clientKey = clientKeyFromRequest(req);
-  const initialContext = contextForClient(clientKey);
-  const initialLocalApplications = localApplicationsForClient(req, initialContext);
-  const localRecordsForPaging = recordsFromApplications(initialLocalApplications, initialContext);
+  if (clientKey === 'default') throw httpError(401, 'Authentication required');
+
+  const cachedContext = contextForClient(clientKey);
+  let userContext = contextHasIdentity(cachedContext) ? cachedContext : {};
+  const initialLocalApplications = localApplicationsForClient(req, userContext);
+  const localRecordsForPaging = recordsFromApplications(initialLocalApplications, userContext);
   const originQuery = originQueryForMergedPage(query, localRecordsForPaging.length);
   const originBody = Buffer.from(JSON.stringify(originQuery), 'utf8');
 
   try {
+    // Let the origin authenticate this request directly, matching the original application flow.
     const remoteResponse = await fetchTarget(req, reqUrl, null, originBody);
     if (remoteResponse.status >= 400) {
-      throw new Error(`Origin getMyApply returned HTTP ${remoteResponse.status}`);
+      throw new Error('Origin getMyApply returned HTTP ' + remoteResponse.status);
     }
 
     const remoteType = headerValue(remoteResponse.headers, 'content-type') || 'application/json; charset=utf-8';
@@ -674,29 +788,37 @@ async function handleGetMyApply(req, res, reqUrl) {
 
     const originEnvelope = JSON.parse(remoteResponse.body.toString('utf8'));
     const derivedContext = deriveUserContextFromOriginRecords(originEnvelope);
-    let userContext = saveContextForClient(clientKey, derivedContext);
+    userContext = saveContextForClient(clientKey, derivedContext);
     try {
       userContext = await captureLatestOriginWorkflowTemplate(req, originEnvelope);
     } catch {
       // Keep the most recently saved template when the optional origin detail lookup fails.
     }
+
     const localApplications = localApplicationsForClient(req, userContext);
     const localRecords = recordsFromApplications(localApplications, userContext);
     const mergedEnvelope = mergeRecords(originEnvelope, localRecords, query);
     sendJson(res, remoteResponse.status, mergedEnvelope);
   } catch (error) {
-    const localRecords = currentLocalRecords(req);
-    sendJson(res, 200, createLocalOnlyApplyResponse(localRecords, query));
+    if (Number.isInteger(error?.statusCode)) throw error;
+    // If the origin is temporarily unavailable, keep the logged-in session usable with local records.
+    const localRecords = currentLocalRecords(req, userContext);
+    sendJson(res, 200, {
+      ...createLocalOnlyApplyResponse(localRecords, query),
+      localOnly: true,
+      mode: 'local-only',
+    });
   }
 }
 
 async function handleBaseData(req, res, reqUrl) {
   const remoteResponse = await fetchTarget(req, reqUrl, null);
   const remoteType = headerValue(remoteResponse.headers, 'content-type') || 'application/json; charset=utf-8';
-  if (isTextualContentType(remoteType)) {
+  const clientKey = clientKeyFromRequest(req);
+  if (isTextualContentType(remoteType) && clientKey !== 'default') {
     try {
       const originEnvelope = JSON.parse(remoteResponse.body.toString('utf8'));
-      saveContextForClient(clientKeyFromRequest(req), userContextFromBaseData(originEnvelope));
+      saveContextForClient(clientKey, userContextFromBaseData(originEnvelope));
     } catch {
       // Keep proxying the origin response even if local context extraction fails.
     }
@@ -735,8 +857,8 @@ async function handleLocalDetail(req, res, reqUrl) {
     const localId = localIdFromRequest(reqUrl, ['submitId']);
     if (!localId) return false;
     const entry = await findLocalApplicationWithContext(req, localId);
-    if (!entry) return false;
-    const submitInfo = buildLocalSubmitInfo(entry, contextForClient(clientKeyFromRequest(req)));
+    if (!entry) { sendJson(res, 404, { ok: false, message: 'Record not found' }); return true; }
+    const submitInfo = buildLocalSubmitInfo(entry, req.verifiedContext || contextForClient(clientKeyFromRequest(req)));
     sendJson(res, 200, {
       code: 0,
       msg: 'success',
@@ -749,8 +871,8 @@ async function handleLocalDetail(req, res, reqUrl) {
     const localId = localIdFromRequest(reqUrl, ['processId']);
     if (!localId) return false;
     const entry = await findLocalApplicationWithContext(req, localId);
-    if (!entry) return false;
-    const flowRecord = buildLocalFlowRecord(entry, contextForClient(clientKeyFromRequest(req)));
+    if (!entry) { sendJson(res, 404, { ok: false, message: 'Record not found' }); return true; }
+    const flowRecord = buildLocalFlowRecord(entry, req.verifiedContext || contextForClient(clientKeyFromRequest(req)));
     sendJson(res, 200, {
       code: 0,
       msg: 'success',
@@ -762,6 +884,8 @@ async function handleLocalDetail(req, res, reqUrl) {
   if (reqUrl.pathname === workflowStatusEndpoint) {
     const localId = localIdFromRequest(reqUrl, ['processId']);
     if (!localId) return false;
+    const entry = await findLocalApplicationWithContext(req, localId);
+    if (!entry) { sendJson(res, 404, { ok: false, message: 'Record not found' }); return true; }
     const workflowStatus = buildLocalWorkflowStatus();
     sendJson(res, 200, {
       code: 0,
@@ -776,10 +900,11 @@ async function handleLocalDetail(req, res, reqUrl) {
 
 async function handleLocalApi(req, res, reqUrl) {
   if (reqUrl.pathname === '/api/records' && req.method === 'GET') {
+    const userContext = await ensureUserContext(req);
     sendJson(res, 200, {
       ok: true,
       status: 'local-json-active',
-      records: currentLocalRecords(req),
+      records: currentLocalRecords(req, userContext),
     });
     return true;
   }
@@ -787,14 +912,18 @@ async function handleLocalApi(req, res, reqUrl) {
   if (reqUrl.pathname === '/api/applications' && req.method === 'POST') {
     const body = await readRequestBody(req);
     const payload = parseJsonBody(body);
+    validateApplication(payload);
+    const userContext = await ensureUserContext(req);
     const clientKey = clientKeyFromRequest(req);
     const entry = saveApplication(applicationsPath, payload, {
-      ...contextForClient(clientKey),
+      ...userContext,
       clientKey,
     });
     sendJson(res, 200, {
       ok: true,
       status: 'local-json-active',
+      localOnly: true,
+      mode: 'local-only',
       application: entry,
     });
     return true;
@@ -811,14 +940,78 @@ async function handleLocalApi(req, res, reqUrl) {
   return false;
 }
 
+function validateApplication(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw httpError(400, 'Application payload must be an object');
+  }
+  if (!String(payload.formId || '').trim() || !payload.params || typeof payload.params !== 'object' || Array.isArray(payload.params)) {
+    throw httpError(400, 'formId and params are required');
+  }
+
+  const parseTime = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value === 'number') {
+      const timestamp = new Date(value).getTime();
+      if (!Number.isFinite(timestamp)) throw httpError(400, 'Invalid leave time');
+      return timestamp;
+    }
+    if (typeof value !== 'string') throw httpError(400, 'Invalid leave time');
+
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?$/);
+    const normalized = match
+      ? trimmed.replace(' ', 'T') + (trimmed.split(':').length === 3 ? '+08:00' : ':00+08:00')
+      : trimmed;
+    const timestamp = Date.parse(normalized);
+    if (!Number.isFinite(timestamp)) throw httpError(400, 'Invalid leave time');
+    return timestamp;
+  };
+
+  const begin = parseTime(payload.params.gatewayTransitBeginTime);
+  const end = parseTime(payload.params.gatewayTransitEndTime);
+  if (begin !== null && end !== null && end <= begin) {
+    throw httpError(400, 'Leave end time must be after start time');
+  }
+}
+
+function isSafeWriteRequest(req) {
+  if (req.headers['sec-fetch-site'] === 'cross-site') return false;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+
+  try {
+    const originHost = new URL(origin).host;
+    const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+    const requestHosts = [req.headers.host, forwardedHost].filter(Boolean);
+    return requestHosts.includes(originHost);
+  } catch {
+    return false;
+  }
+}
+
+try {
+  fs.mkdirSync(dataDir, { recursive: true });
+} catch (error) {
+  console.error('[leave-system] cannot create data directory:', error);
+  process.exit(1);
+}
+
 const server = http.createServer(async (req, res) => {
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('referrer-policy', 'same-origin');
   try {
     if (!fs.existsSync(liveDir)) {
       sendText(res, 500, 'Missing leave-system-live-copy. Run: node scripts/generate-live-copy.mjs');
       return;
     }
 
-    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
+    const reqUrl = new URL(req.url || '/', 'http://' + (req.headers.host || '127.0.0.1'));
+
+    if (reqUrl.pathname === '/healthz' && req.method === 'GET') {
+      sendJson(res, 200, { ok: true, service: 'leave-system' });
+      return;
+    }
 
     if (req.method === 'GET') {
       let decodedPathname = reqUrl.pathname;
@@ -837,12 +1030,16 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
-        'access-control-allow-origin': '*',
-        'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+        'access-control-allow-methods': 'GET,HEAD,POST,OPTIONS',
         'access-control-allow-headers': req.headers['access-control-request-headers'] || '*',
+        'cache-control': 'no-store',
       });
       res.end();
       return;
+    }
+
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !isSafeWriteRequest(req)) {
+      throw httpError(403, 'Cross-origin writes are not allowed');
     }
 
     if (req.method === 'GET' && liveAppShellPaths.has(reqUrl.pathname)) {
@@ -851,7 +1048,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && reqUrl.pathname === submitEndpoint) {
-      await handleSubmitForm(req, res);
+      await handleSubmitForm(req, res, reqUrl);
       return;
     }
 
@@ -882,15 +1079,41 @@ const server = http.createServer(async (req, res) => {
 
     await proxyToTarget(req, res, reqUrl, localPath);
   } catch (error) {
-    sendJson(res, 502, {
+    if (res.headersSent || res.writableEnded) {
+      res.destroy();
+      return;
+    }
+
+    const status = Number.isInteger(error?.statusCode) ? error.statusCode : 502;
+    const message = error && typeof error.message === 'string' ? error.message : String(error);
+    if (status >= 500) console.error('[leave-system] request failed:', message);
+    sendJson(res, status, {
       ok: false,
-      message: 'Live proxy request failed',
-      error: error instanceof Error ? error.message : String(error),
+      message: status >= 500 ? 'Service temporarily unavailable' : message,
     });
   }
 });
 
+server.requestTimeout = 60000;
+server.headersTimeout = 15000;
+server.on('error', (error) => {
+  console.error('[leave-system] server failed:', error);
+  process.exit(1);
+});
+
+let shuttingDown = false;
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    server.close(() => process.exit(0));
+    server.closeIdleConnections();
+    setTimeout(() => process.exit(1), 10000).unref();
+  });
+}
+
 server.listen(port, host, () => {
-  console.log(`Live copy server running at http://${host}:${port}/index.html#/pages/login/login?unionid=2508330129619148941&schoolCode=qt036`);
-  console.log(`Proxy target: ${targetOrigin}`);
+  console.log('Live copy server running at http://' + host + ':' + port + '/index.html#/pages/login/login?unionid=2508330129619148941&schoolCode=qt036');
+  console.log('Proxy target: ' + targetOrigin);
+  console.log('Submit mode: ' + (forwardSubmit ? 'origin-forwarding' : 'local-only'));
 });

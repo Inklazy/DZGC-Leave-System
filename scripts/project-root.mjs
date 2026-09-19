@@ -1,3 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export const root = path.resolve(process.env.LEAVE_SYSTEM_ROOT || process.cwd());
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+export const root = path.resolve(process.env.LEAVE_SYSTEM_ROOT || path.join(moduleDir, '..'));

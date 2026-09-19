@@ -13,3 +13,5 @@ leave-system-copy
 Copy Leave System ok1.zip
 Copy Leave System test2.zip
 DEPLOY.md
+.env
+.env.*

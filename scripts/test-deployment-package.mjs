@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(process.env.LEAVE_SYSTEM_ROOT || process.cwd());
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(process.env.LEAVE_SYSTEM_ROOT || path.join(scriptDir, '..'));
 const packagePath = path.join(root, 'package.json');
 const projectRootPath = path.join(root, 'scripts', 'project-root.mjs');
 const serverPath = path.join(root, 'scripts', 'serve-live-copy.mjs');
@@ -34,12 +36,15 @@ const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 assert.equal(pkg.type, 'module');
 assert.equal(pkg.scripts.start, 'node scripts/serve-live-copy.mjs');
 assert.ok(pkg.scripts.test.includes('test-local-backend.mjs'));
+assert.ok(pkg.scripts.test.includes('test-server-security.mjs'));
+assert.ok(pkg.scripts.test.includes('test-forward-submit.mjs'));
 assert.ok(!pkg.scripts.test.includes(obsoleteServerlessTestName));
 assert.ok(pkg.scripts.verify.includes('verify-live-copy.mjs'));
 assert.ok(!JSON.stringify(pkg).toLowerCase().includes(obsoleteCliName), 'package.json should not depend on serverless deployment tooling');
 
 const projectRootSource = fs.readFileSync(projectRootPath, 'utf8');
-assert.ok(projectRootSource.includes('process.env.LEAVE_SYSTEM_ROOT || process.cwd()'), 'project-root.mjs must use LEAVE_SYSTEM_ROOT or cwd');
+assert.ok(projectRootSource.includes('process.env.LEAVE_SYSTEM_ROOT ||'), 'project-root.mjs must honor LEAVE_SYSTEM_ROOT');
+assert.ok(projectRootSource.includes('fileURLToPath(import.meta.url)'), 'project-root.mjs must fall back to its own location');
 
 for (const filePath of [serverPath, liveVerifyPath]) {
   const source = fs.readFileSync(filePath, 'utf8');
@@ -50,6 +55,9 @@ for (const filePath of [serverPath, liveVerifyPath]) {
 const serverSource = fs.readFileSync(serverPath, 'utf8');
 assert.ok(serverSource.includes("process.env.HOST || '0.0.0.0'"), 'server must default to the Docker-compatible host');
 assert.ok(serverSource.includes('server.listen(port, host'), 'server must listen using the configured host');
+for (const required of ['MAX_BODY_BYTES', 'MAX_RESPONSE_BYTES', 'isSafeWriteRequest', "/healthz", 'x-content-type-options', 'LEAVE_SYSTEM_DATA_DIR', 'transfer-encoding']) {
+  assert.ok(serverSource.includes(required), 'server is missing hardening marker: ' + required);
+}
 
 const dockerfile = fs.readFileSync(dockerfilePath, 'utf8');
 for (const required of [
@@ -60,6 +68,7 @@ for (const required of [
   'scripts/project-root.mjs ./scripts/project-root.mjs',
   'leave-system-live-copy ./leave-system-live-copy',
   'EXPOSE 8123',
+  '/healthz',
   'CMD ["node", "scripts/serve-live-copy.mjs"]',
 ]) {
   assert.ok(dockerfile.includes(required), `Dockerfile missing: ${required}`);
@@ -67,7 +76,7 @@ for (const required of [
 assert.ok(!dockerfile.includes('COPY data'), 'Dockerfile must not copy runtime data');
 
 const dockerignore = fs.readFileSync(dockerignorePath, 'utf8');
-for (const required of ['data', 'node_modules', '.git']) {
+for (const required of ['data', 'node_modules', '.git', '.env']) {
   assert.ok(dockerignore.split(/\r?\n/u).includes(required), `.dockerignore missing: ${required}`);
 }
 
@@ -77,6 +86,8 @@ for (const required of [
   'ghcr.io/zekty/dzgc-leave-system:latest',
   '127.0.0.1:8123:8123',
   '/opt/leave-system-data:/app/data',
+  'LEAVE_SYSTEM_DATA_DIR: /app/data',
+  'LEAVE_SYSTEM_FORWARD_SUBMIT',
   'restart: unless-stopped',
 ]) {
   assert.ok(compose.includes(required), `compose.yaml missing: ${required}`);
@@ -115,6 +126,8 @@ for (const required of [
   'docker compose -f compose.yaml -f compose.vps-build.yaml build --pull',
   'git archive --format=tar.gz',
   '/opt/leave-system-data',
+  '/healthz',
+  'LEAVE_SYSTEM_FORWARD_SUBMIT',
   'ghcr.io/zekty/dzgc-leave-system:latest',
 ]) {
   assert.ok(deployDoc.includes(required), `DEPLOY.md missing: ${required}`);

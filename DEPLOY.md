@@ -2,6 +2,8 @@
 
 项目支持两条 Docker 部署路线。两条路线都不需要 VPS 安装 Node.js 或运行 systemd，且都将请假记录保存到 VPS 的 `/opt/leave-system-data`。
 
+默认情况下提交只写入本地 JSON，不会提交到学校原系统。需要真实转发时，在 VPS 项目目录的 `.env` 文件中设置 `LEAVE_SYSTEM_FORWARD_SUBMIT=1` 并重启 Compose，同时确认登录会话有效。健康检查地址为 `/healthz`。
+
 1. **VPS 本机构建（推荐）**：VPS 使用项目源码和 Dockerfile 构建镜像，不依赖 GitHub Actions、GHCR 或 GitHub Packages。
 2. **GHCR 拉取镜像（可选）**：GitHub Actions 构建镜像，VPS 只拉取镜像。
 

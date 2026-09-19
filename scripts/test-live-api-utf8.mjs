@@ -24,6 +24,7 @@ const userContextsPath = path.join(root, 'data', 'user-contexts.json');
 const testClientKey = crypto.createHash('sha256').update(headers.cookie).digest('hex').slice(0, 16);
 const reloginClientKey = crypto.createHash('sha256').update(reloginHeaders.cookie).digest('hex').slice(0, 16);
 const otherAccountClientKey = crypto.createHash('sha256').update(otherAccountHeaders.cookie).digest('hex').slice(0, 16);
+const alternateClientKey = crypto.createHash('sha256').update(alternateHeaders.cookie).digest('hex').slice(0, 16);
 const testDescription = '接口级本地提交测试';
 const workflowTemplate = {
   actList: [
@@ -107,7 +108,7 @@ function cleanupTestApplications() {
 function cleanupTestUserContexts() {
   const contexts = loadStoredUserContexts();
   let changed = false;
-  for (const key of [testClientKey, reloginClientKey, otherAccountClientKey]) {
+  for (const key of [testClientKey, reloginClientKey, otherAccountClientKey, alternateClientKey]) {
     if (Object.hasOwn(contexts, key)) {
       delete contexts[key];
       changed = true;
@@ -152,6 +153,10 @@ function seedTestUserContexts() {
   };
   contexts[testClientKey] = baseContext;
   contexts[reloginClientKey] = {
+    ...baseContext,
+    updatedAt: new Date().toISOString(),
+  };
+  contexts[alternateClientKey] = {
     ...baseContext,
     updatedAt: new Date().toISOString(),
   };

@@ -259,6 +259,7 @@ function userKeyFromPayload(fields, userContext) {
 }
 
 function accountKeyFromContext(context = {}) {
+  if (!context || typeof context !== 'object') return '';
   return compactString(context.userNo) ||
     compactString(context.studentNo) ||
     compactString(context.userKey);
@@ -270,7 +271,9 @@ function accountKeyFromEntry(entry = {}, clientContexts = {}) {
     return entryKey;
   }
 
-  const clientContext = entry.clientKey ? clientContexts[entry.clientKey] : null;
+  const clientContext = entry.clientKey && clientContexts && typeof clientContexts === 'object'
+    ? clientContexts[entry.clientKey]
+    : null;
   return accountKeyFromContext(clientContext);
 }
 
@@ -296,7 +299,7 @@ export function selectApplicationsForUser(applications = [], userContext = {}, c
       return entry.clientKey === currentClientKey;
     }
 
-    return !entry.clientKey && !entry.userKey;
+    return false; // Unowned legacy records must never be public.
   });
 }
 
@@ -771,7 +774,8 @@ export function loadApplications(storagePath) {
   }
 
   const parsed = JSON.parse(raw);
-  return Array.isArray(parsed) ? parsed : [];
+  if (!Array.isArray(parsed)) throw new Error('Invalid applications storage: expected an array');
+  return parsed;
 }
 
 export function saveApplication(storagePath, payload, userContext = {}) {
@@ -781,7 +785,7 @@ export function saveApplication(storagePath, payload, userContext = {}) {
 
   const records = loadApplications(storagePath);
   records.unshift(entry);
-  const tempPath = `${storagePath}.${process.pid}.tmp`;
+  const tempPath = `${storagePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   fs.writeFileSync(tempPath, `${JSON.stringify(records, null, 2)}\n`, 'utf8');
   fs.renameSync(tempPath, storagePath);
   return entry;
