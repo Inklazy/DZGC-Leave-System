@@ -3,7 +3,7 @@ name: leave-system
 services:
   leave-system:
     container_name: leave-system
-    image: ghcr.io/zekty/dzgc-leave-system:latest
+    image: ghcr.io/inklazy/dzgc-leave-system:latest
     restart: unless-stopped
     environment:
       PORT: "8123"

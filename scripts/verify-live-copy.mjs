@@ -3,6 +3,9 @@ import path from 'node:path';
 import { hasExtensionArtifacts } from './html-artifacts.mjs';
 import { root } from './project-root.mjs';
 
+// Deployment checks validate tracked runtime assets, not private local captures.
+const deploymentOnly = process.argv.includes('--deployment');
+
 const sourceDir = path.join(root, 'myhtml');
 const liveDir = path.join(root, 'leave-system-live-copy');
 
@@ -65,7 +68,7 @@ function assertNoExtensionArtifacts(dir, label) {
   }
 }
 
-if (!exists(sourceDir)) {
+if (!deploymentOnly && !exists(sourceDir)) {
   fail(`Missing source directory: ${sourceDir}`);
 }
 
@@ -80,7 +83,9 @@ if (!exists(liveDir)) {
   fail(`Missing generated live copy directory: ${liveDir}`);
 }
 
-assertNoExtensionArtifacts(sourceDir, 'source page');
+if (!deploymentOnly) {
+  assertNoExtensionArtifacts(sourceDir, 'source page');
+}
 assertNoExtensionArtifacts(liveDir, 'live page');
 
 if (exists(liveDir)) {

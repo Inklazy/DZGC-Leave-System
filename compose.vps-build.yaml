@@ -1,5 +1,6 @@
-# Combine with compose.yaml to build the image on the VPS instead of pulling it
-# from GitHub Container Registry. The runtime data volume remains unchanged.
+# Fallback only when GitHub Actions / GHCR is unavailable.
+# Prefer compose.yaml alone to pull GHCR images. Combine these files for a
+# VPS-local build; the runtime data volume remains unchanged.
 services:
   leave-system:
     image: dzgc-leave-system:local

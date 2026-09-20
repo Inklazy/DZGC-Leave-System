@@ -4,38 +4,59 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "v*"
   pull_request:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: zekty/dzgc-leave-system
   TZ: Asia/Shanghai
 
 jobs:
-  docker:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
-
-      - name: Run project checks
+      # No npm install: the project has no dependencies or lockfile.
+      - name: Run project tests
         run: npm test
+      - name: Verify deployment resources
+        run: npm run verify
+      - name: Validate Compose configurations
+        run: |
+          docker compose config --quiet
+          docker compose -f compose.yaml -f compose.vps-build.yaml config --quiet
+
+  docker:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Normalize repository image name
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "IMAGE_NAME=${REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -44,17 +65,26 @@ jobs:
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
+        env:
+          DOCKER_METADATA_SHORT_SHA_LENGTH: 7
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Version tags must not implicitly overwrite main's latest.
+          flavor: latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short
             type=ref,event=tag
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Build and publish Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

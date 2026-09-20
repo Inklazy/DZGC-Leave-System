@@ -39,7 +39,8 @@ assert.ok(pkg.scripts.test.includes('test-local-backend.mjs'));
 assert.ok(pkg.scripts.test.includes('test-server-security.mjs'));
 assert.ok(pkg.scripts.test.includes('test-forward-submit.mjs'));
 assert.ok(!pkg.scripts.test.includes(obsoleteServerlessTestName));
-assert.ok(pkg.scripts.verify.includes('verify-live-copy.mjs'));
+assert.equal(pkg.scripts.verify, 'node scripts/verify-live-copy.mjs --deployment');
+assert.equal(pkg.scripts['verify:local'], 'node scripts/verify-live-copy.mjs && node scripts/verify-copy.mjs');
 assert.ok(!JSON.stringify(pkg).toLowerCase().includes(obsoleteCliName), 'package.json should not depend on serverless deployment tooling');
 
 const projectRootSource = fs.readFileSync(projectRootPath, 'utf8');
@@ -83,7 +84,7 @@ for (const required of ['data', 'node_modules', '.git', '.env']) {
 const compose = fs.readFileSync(composePath, 'utf8');
 for (const required of [
   'name: leave-system',
-  'ghcr.io/zekty/dzgc-leave-system:latest',
+  'ghcr.io/inklazy/dzgc-leave-system:latest',
   '127.0.0.1:8123:8123',
   '/opt/leave-system-data:/app/data',
   'LEAVE_SYSTEM_DATA_DIR: /app/data',
@@ -110,7 +111,24 @@ for (const required of [
   'docker/metadata-action@v5',
   'docker/build-push-action@v6',
   'REGISTRY: ghcr.io',
-  'IMAGE_NAME: zekty/dzgc-leave-system',
+  'REPOSITORY: ${{ github.repository }}',
+  'IMAGE_NAME=${REPOSITORY,,}',
+  'contents: read',
+  'needs: checks',
+  'run: npm test',
+  'run: npm run verify',
+  'docker/setup-buildx-action@v3',
+  'platforms: linux/amd64',
+  'cache-from: type=gha',
+  'cache-to: type=gha,mode=max',
+  'password: ${{ secrets.GITHUB_TOKEN }}',
+  'flavor: latest=false',
+  "type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}",
+  'type=sha,prefix=sha-,format=short',
+  'DOCKER_METADATA_SHORT_SHA_LENGTH: 7',
+  'type=ref,event=tag',
+  'org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}',
+  "push: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}",
 ]) {
   assert.ok(workflow.includes(required), `.github/workflows/docker.yml missing: ${required}`);
 }
@@ -128,7 +146,7 @@ for (const required of [
   '/opt/leave-system-data',
   '/healthz',
   'LEAVE_SYSTEM_FORWARD_SUBMIT',
-  'ghcr.io/zekty/dzgc-leave-system:latest',
+  'ghcr.io/inklazy/dzgc-leave-system:latest',
 ]) {
   assert.ok(deployDoc.includes(required), `DEPLOY.md missing: ${required}`);
 }
